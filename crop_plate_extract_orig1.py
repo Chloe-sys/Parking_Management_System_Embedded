@@ -6,7 +6,7 @@ import time
 import re
 
 # Load YOLOv8 model (update path if needed)
-model = YOLO('/opt/homebrew/runs/detect/train4/weights/best.pt')
+model = YOLO('./best.pt')
 
 # Create folder to save cropped plates
 save_dir = 'plates'

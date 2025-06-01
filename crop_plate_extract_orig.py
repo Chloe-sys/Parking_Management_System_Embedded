@@ -5,7 +5,7 @@ import os
 import time
 
 # Load YOLOv8 model
-model = YOLO('/opt/homebrew/runs/detect/train4/weights/best.pt')  # Absolute path to your best weights
+model = YOLO('./best.pt')  # Absolute path to your best weights
 
 # Create folder to save cropped plates
 save_dir = 'plates'
