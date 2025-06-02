@@ -1,248 +1,105 @@
 #include <SPI.h>
 #include <MFRC522.h>
-
 #define RST_PIN 9
 #define SS_PIN 10
-
+#define BALANCE_BLOCK 4
+#define PLATE_BLOCK 5
+#define MAX_PLATE_LENGTH 7
+#define MAX_BALANCE_DIGITS 10
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 MFRC522::MIFARE_Key key;
-
-const int PLATE_BLOCK = 1;
-const int BALANCE_BLOCK = 2;
-
-bool isValidPlate(String plate) {
-  if (plate.length() == 0 || plate.length() > 16) return false;
-  for (int i = 0; i < plate.length(); i++) {
-    char c = plate.charAt(i);
-    if (!isAlphaNumeric(c)) return false;
-  }
-  return true;
-}
-
+MFRC522::StatusCode card_status;
 void setup() {
   Serial.begin(9600);
   SPI.begin();
   mfrc522.PCD_Init();
-
   for (byte i = 0; i < 6; i++) {
     key.keyByte[i] = 0xFF;
   }
-
-  Serial.println("Place your RFID card...");
-  Serial.println("Type REGISTER to register a new card.");
+  Serial.println(F("RFID Top-Up Ready."));
+  Serial.println(F("> Enter data in format: PLATE|BALANCE (e.g., RAB123A|1000)"));
 }
-
 void loop() {
-  if (Serial.available()) {
-    String command = Serial.readStringUntil('\n');
-    command.trim();
-
-    if (command.equalsIgnoreCase("REGISTER")) {
-      registerCard();
-    }
-  }
-
-  // Normal payment processing mode
-  if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
-    processPayment();
-  }
-}
-
-void registerCard() {
-  Serial.println("=== Card Registration Mode ===");
-  Serial.println("Enter Plate Number (max 16 alphanumeric chars):");
-  String plate = waitForSerialInput();
-  plate.trim();
-
-  if (!isValidPlate(plate)) {
-    Serial.println("Invalid plate format. Registration aborted.");
+  if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
+    delay(100);
     return;
   }
-
-  Serial.println("Enter Initial Balance (e.g., 1000.00):");
-  String balanceStr = waitForSerialInput();
-  balanceStr.trim();
-  float balance = balanceStr.toFloat();
-
-  if (balance < 0 || isnan(balance)) {
-    Serial.println("Invalid balance amount. Registration aborted.");
-    return;
-  }
-
-  Serial.println("Tap the card to register...");
-
-  unsigned long start = millis();
-  while (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
-    if (millis() - start > 20000) {  // 20 sec timeout
-      Serial.println("Timeout waiting for card. Registration aborted.");
-      return;
-    }
-  }
-
-  if (writePlateAndBalance(plate, balance)) {
-    Serial.println("Card registered successfully!");
-    Serial.print("Plate: ");
-    Serial.println(plate);
-    Serial.print("Balance: ");
-    Serial.println(balance, 2);
-  } else {
-    Serial.println("Failed to register card.");
-  }
-
-  mfrc522.PICC_HaltA();
-  mfrc522.PCD_StopCrypto1();
-  Serial.println("Exiting registration mode.");
-}
-
-String waitForSerialInput() {
-  while (!Serial.available()) {
-    // wait
-  }
-  return Serial.readStringUntil('\n');
-}
-
-bool writePlateAndBalance(String plate, float balance) {
-  MFRC522::StatusCode status;
-  byte buffer[16];
-
-  // Authenticate Plate Block
-  status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, PLATE_BLOCK, &key, &(mfrc522.uid));
-  if (status != MFRC522::STATUS_OK) {
-    Serial.println("Auth failed for writing plate.");
-    return false;
-  }
-
-  // Prepare plate buffer (16 bytes, padded with spaces)
-  memset(buffer, ' ', sizeof(buffer));
-  for (int i = 0; i < plate.length() && i < 16; i++) {
-    buffer[i] = plate.charAt(i);
-  }
-
-  status = mfrc522.MIFARE_Write(PLATE_BLOCK, buffer, 16);
-  if (status != MFRC522::STATUS_OK) {
-    Serial.println("Failed to write plate.");
-    return false;
-  }
-
-  // Authenticate Balance Block
-  status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, BALANCE_BLOCK, &key, &(mfrc522.uid));
-  if (status != MFRC522::STATUS_OK) {
-    Serial.println("Auth failed for writing balance.");
-    return false;
-  }
-
-  // Prepare balance buffer (store float in first 4 bytes, rest zeros)
-  memset(buffer, 0, sizeof(buffer));
-  memcpy(buffer, &balance, sizeof(float));
-
-  status = mfrc522.MIFARE_Write(BALANCE_BLOCK, buffer, 16);
-  if (status != MFRC522::STATUS_OK) {
-    Serial.println("Failed to write balance.");
-    return false;
-  }
-
-  return true;
-}
-
-void processPayment() {
-  byte buffer[18];
-  byte size = sizeof(buffer);
-  MFRC522::StatusCode status;
-
-  // Authenticate and read Plate
-  status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, PLATE_BLOCK, &key, &(mfrc522.uid));
-  if (status != MFRC522::STATUS_OK) {
-    Serial.println("Auth failed for plate.");
-    return;
-  }
-
-  status = mfrc522.MIFARE_Read(PLATE_BLOCK, buffer, &size);
-  if (status != MFRC522::STATUS_OK) {
-    Serial.println("Reading plate failed.");
-    return;
-  }
-
-  String plateNumber = "";
-  for (int i = 0; i < 16; i++) {
-    if (isPrintable(buffer[i])) {
-      plateNumber += (char)buffer[i];
-    }
-  }
-  plateNumber.trim();
-
-  if (!isValidPlate(plateNumber)) {
-    Serial.println("Invalid plate format.");
-    return;
-  }
-
-  // Authenticate and read Balance
-  status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, BALANCE_BLOCK, &key, &(mfrc522.uid));
-  if (status != MFRC522::STATUS_OK) {
-    Serial.println("Auth failed for balance.");
-    return;
-  }
-
-  status = mfrc522.MIFARE_Read(BALANCE_BLOCK, buffer, &size);
-  if (status != MFRC522::STATUS_OK) {
-    Serial.println("Reading balance failed.");
-    return;
-  }
-
-  float currentBalance;
-  memcpy(&currentBalance, buffer, sizeof(float));
-
-  if (isnan(currentBalance) || currentBalance < 0) {
-    Serial.println("Invalid balance stored on card.");
-    return;
-  }
-
-  Serial.print("PLATE:");
-  Serial.print(plateNumber);
-  Serial.print(";BALANCE:");
-  Serial.println(currentBalance, 2);
-
-  // Wait for payment amount from PC
-  unsigned long start = millis();
-  while (!Serial.available()) {
-    if (millis() - start > 10000) {
-      Serial.println("Timeout waiting for amount.");
-      return;
-    }
-  }
+  Serial.println(F(":white_check_mark: Card detected. Enter PLATE|BALANCE:"));
+  while (Serial.available() == 0) {}
   String input = Serial.readStringUntil('\n');
   input.trim();
-  float amountDue = input.toFloat();
-
-  if (amountDue <= 0 || isnan(amountDue)) {
-    Serial.println("Invalid amount received.");
+  int separatorIndex = input.indexOf('|');
+  if (separatorIndex <= 0 || separatorIndex == input.length() - 1) {
+    Serial.println(F(":x: Invalid format. Use PLATE|BALANCE"));
+    stopCard();
     return;
   }
-
-  if (amountDue > currentBalance) {
-    Serial.println("INSUFFICIENT");
-  } else {
-    float newBalance = currentBalance - amountDue;
-
-    byte writeBuffer[16];
-    memset(writeBuffer, 0, sizeof(writeBuffer));
-    memcpy(writeBuffer, &newBalance, sizeof(float));
-
-    // Authenticate before writing
-    status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, BALANCE_BLOCK, &key, &(mfrc522.uid));
-    if (status != MFRC522::STATUS_OK) {
-      Serial.println("Auth failed for write.");
-      return;
-    }
-
-    status = mfrc522.MIFARE_Write(BALANCE_BLOCK, writeBuffer, 16);
-    if (status != MFRC522::STATUS_OK) {
-      Serial.println("Write failed.");
-      return;
-    }
-
-    Serial.println("DONE");
+  String plate = input.substring(0, separatorIndex);
+  String balance = input.substring(separatorIndex + 1);
+  plate.trim();
+  balance.trim();
+  if (!isValidRwandanPlate(plate)) {
+    Serial.println(F(":x: Invalid plate format. Must be 3 letters, 3 digits, 1 letter (e.g., RAB123A)"));
+    stopCard();
+    return;
   }
-
+  if (!isValidAmount(balance)) {
+    Serial.println(F(":x: Invalid balance. Must be digits only, max 10 digits"));
+    stopCard();
+    return;
+  }
+  if (!writeBlock(PLATE_BLOCK, plate)) {
+    Serial.println(F(":x: Failed to write plate"));
+    stopCard();
+    return;
+  }
+  if (!writeBlock(BALANCE_BLOCK, balance)) {
+    Serial.println(F(":x: Failed to write balance"));
+    stopCard();
+    return;
+  }
+  Serial.println(F(":white_check_mark: Success: Plate and balance written"));
+  Serial.print(F(":car: Plate: "));
+  Serial.println(plate);
+  Serial.print(F(":moneybag: Balance: "));
+  Serial.println(balance);
+  stopCard();
+  delay(500);
+}
+bool isValidRwandanPlate(String plate) {
+  if (plate.length() != MAX_PLATE_LENGTH) return false;
+  if (!isAlpha(plate[0]) || !isAlpha(plate[1]) || !isAlpha(plate[2])) return false;
+  if (!isDigit(plate[3]) || !isDigit(plate[4]) || !isDigit(plate[5])) return false;
+  if (!isAlpha(plate[6])) return false;
+  return true;
+}
+bool isValidAmount(String amount) {
+  if (amount.length() == 0 || amount.length() > MAX_BALANCE_DIGITS) return false;
+  for (int i = 0; i < amount.length(); i++) {
+    if (!isDigit(amount[i])) return false;
+  }
+  return true;
+}
+bool writeBlock(byte block, String data) {
+  byte buffer[16];
+  if (data.length() > 16) data = data.substring(0, 16);
+  data.toCharArray((char *)buffer, 16);
+  for (byte i = data.length(); i < 16; i++) buffer[i] = ' ';
+  card_status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, block, &key, &(mfrc522.uid));
+  if (card_status != MFRC522::STATUS_OK) {
+    Serial.print(F(":x: Auth failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(card_status));
+    return false;
+  }
+  card_status = mfrc522.MIFARE_Write(block, buffer, 16);
+  if (card_status != MFRC522::STATUS_OK) {
+    Serial.print(F(":x: Write failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(card_status));
+    return false;
+  }
+  return true;
+}
+void stopCard() {
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
 }

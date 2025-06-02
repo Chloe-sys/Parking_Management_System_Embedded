@@ -3,15 +3,19 @@ import csv
 import time
 from datetime import datetime
 import re
+from database import Database
 
 # Constants
 CSV_FILE = 'plates_log.csv'
-RATE_PER_HOUR = 200
+RATE_PER_HOUR = 500
 EXPECTED_HEADERS = ['Plate Number', 'Action', 'Payment Status', 'Timestamp', 'Amount Due']
 
 # Initialize serial communication
-ser = serial.Serial('/dev/cu.usbmodem1101', 9600, timeout=2)
+ser = serial.Serial('COM4', 9600, timeout=2)
 time.sleep(2)  # Let serial port initialize
+
+# Initialize database
+db = Database()
 
 print("Welcome to Parking Payment System 👋\n")
 
@@ -76,6 +80,27 @@ def find_unpaid_entry(plate):
     Returns (entry_timestamp, amount_due) or (None, None)
     """
     try:
+        # Try database first
+        db.cursor.execute("""
+            SELECT timestamp, amount_due 
+            FROM vehicles 
+            WHERE plate_number = %s 
+            AND action = 'entry' 
+            AND payment_status = FALSE
+            AND NOT EXISTS (
+                SELECT 1 FROM vehicles v2
+                WHERE v2.plate_number = vehicles.plate_number
+                AND v2.action = 'exit'
+                AND v2.timestamp > vehicles.timestamp
+            )
+            ORDER BY timestamp DESC LIMIT 1
+        """, (plate,))
+        
+        result = db.cursor.fetchone()
+        if result:
+            return result[0], result[1]
+
+        # Fallback to CSV if database fails
         with open(CSV_FILE, 'r') as file:
             reader = csv.DictReader(file)
             if not validate_csv_headers(reader.fieldnames):
@@ -125,8 +150,15 @@ def find_unpaid_entry(plate):
     return None, None
 
 def mark_entry_as_paid(plate, amount_paid):
-    """Marks the latest unpaid entry as paid."""
+    """Marks the latest unpaid entry as paid in both database and CSV."""
     try:
+        # Try database first
+        success = db.update_payment(plate, amount_paid)
+        if success:
+            print("[SUCCESS] Database payment status updated")
+            return True
+
+        # Fallback to CSV if database fails
         with open(CSV_FILE, 'r') as file:
             reader = csv.reader(file)
             rows = list(reader)
@@ -147,6 +179,7 @@ def mark_entry_as_paid(plate, amount_paid):
         action_index = header.index("Action")
         payment_index = header.index("Payment Status")
         timestamp_index = header.index("Timestamp")
+        amount_due_index = header.index("Amount Due")
     except ValueError:
         print("[ERROR] Required columns not found.")
         return False
@@ -183,28 +216,18 @@ def mark_entry_as_paid(plate, amount_paid):
     # Mark the newest unpaid entry as paid
     latest_index = unpaid_entries[0][0]
     rows[latest_index][payment_index] = '1'  # Mark as paid
-    
-    # Update amount due if column exists
-    if "Amount Due" in header:
-        amount_due_index = header.index("Amount Due")
-        if len(rows[latest_index]) > amount_due_index:
-            rows[latest_index][amount_due_index] = str(amount_paid)
-        else:
-            rows[latest_index].append(str(amount_paid))
-    else:
-        header.append("Amount Due")
-        rows[latest_index].append(str(amount_paid))
+    rows[latest_index][amount_due_index] = str(amount_paid)
 
     try:
         with open(CSV_FILE, 'w', newline='') as file:
             writer = csv.writer(file)
             writer.writerows(rows)
+        print("[SUCCESS] CSV payment status updated")
         return True
     except Exception as e:
         print(f"[ERROR] Failed to update CSV: {e}")
         return False
 
-# === MAIN LOOP ===
 # === MAIN LOOP ===
 while True:
     line = read_serial_line()

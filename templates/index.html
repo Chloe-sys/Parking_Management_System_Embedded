@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Parking Management Dashboard</title>
+        <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+        <style>
+            body {
+                background: linear-gradient(135deg, #1a202c 0%, #2d3748 100%);
+            }
+            .dashboard-card {
+                background: rgba(255, 255, 255, 0.1);
+                backdrop-filter: blur(10px);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                transition: transform 0.3s ease;
+            }
+            .dashboard-card:hover {
+                transform: translateY(-5px);
+            }
+            .activity-item, .vehicle-item, .exit-item {
+                transition: background-color 0.3s ease;
+            }
+            .activity-item:hover, .vehicle-item:hover, .exit-item:hover {
+                background-color: rgba(255, 255, 255, 0.1);
+            }
+            .unauthorized-exit {
+                animation: pulse 2s infinite;
+            }
+            @keyframes pulse {
+                0% { background-color: rgba(239, 68, 68, 0.1); }
+                50% { background-color: rgba(239, 68, 68, 0.2); }
+                100% { background-color: rgba(239, 68, 68, 0.1); }
+            }
+            .badge {
+                padding: 0.25rem 0.5rem;
+                border-radius: 9999px;
+                font-size: 0.75rem;
+                font-weight: 600;
+            }
+            .badge-entry {
+                background-color: rgba(59, 130, 246, 0.2);
+                color: #60A5FA;
+            }
+            .badge-exit {
+                background-color: rgba(34, 197, 94, 0.2);
+                color: #4ADE80;
+            }
+            .badge-unauthorized {
+                background-color: rgba(239, 68, 68, 0.2);
+                color: #F87171;
+            }
+            .badge-paid {
+                background-color: rgba(34, 197, 94, 0.2);
+                color: #4ADE80;
+            }
+            .badge-unpaid {
+                background-color: rgba(234, 179, 8, 0.2);
+                color: #FACC15;
+            }
+        </style>
+    </head>
+<body class="text-white min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <header class="mb-8 text-center">
+            <h1 class="text-4xl font-bold mb-2">Parking Management Dashboard</h1>
+            <p class="text-gray-400">Real-time monitoring and control</p>
+        </header>
+
+        <!-- Stats Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="dashboard-card rounded-lg p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400">Current Vehicles</p>
+                        <h2 class="text-3xl font-bold" id="current-count">0</h2>
+                    </div>
+                    <i class="fas fa-car text-4xl text-blue-500"></i>
+                </div>
+            </div>
+            <div class="dashboard-card rounded-lg p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400">Today's Revenue</p>
+                        <h2 class="text-3xl font-bold" id="today-revenue">RWF 0</h2>
+                    </div>
+                    <i class="fas fa-money-bill-wave text-4xl text-green-500"></i>
+                </div>
+            </div>
+            <div class="dashboard-card rounded-lg p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400">Unauthorized Exits</p>
+                        <h2 class="text-3xl font-bold" id="unauthorized-count">0</h2>
+                    </div>
+                    <i class="fas fa-exclamation-triangle text-4xl text-red-500"></i>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <!-- Recent Activity -->
+            <div class="dashboard-card rounded-lg p-6">
+                <h3 class="text-xl font-bold mb-4">Recent Activity</h3>
+                <div class="space-y-4 max-h-[600px] overflow-y-auto" id="activity-list">
+                    <div class="text-gray-400 text-center p-4">Loading activities...</div>
+                </div>
+            </div>
+
+            <!-- Current Vehicles -->
+            <div class="dashboard-card rounded-lg p-6">
+                <h3 class="text-xl font-bold mb-4">Currently Parked Vehicles</h3>
+                <div class="space-y-4 max-h-[600px] overflow-y-auto" id="current-vehicles">
+                    <div class="text-gray-400 text-center p-4">Loading vehicles...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Unauthorized Exits Section -->
+        <div class="mt-8">
+            <div class="dashboard-card rounded-lg p-6">
+                <h3 class="text-xl font-bold mb-4">Recent Unauthorized Exit Attempts</h3>
+                <div class="space-y-4 max-h-[300px] overflow-y-auto" id="unauthorized-exits">
+                    <div class="text-gray-400 text-center p-4">Loading unauthorized exits...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Format currency
+        function formatCurrency(amount) {
+            try {
+                if (isNaN(amount) || amount === null) return 'RWF 0.00';
+                return `RWF ${parseFloat(amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+            } catch (e) {
+                console.error('Error formatting currency:', e);
+                return 'RWF 0.00';
+            }
+        }
+
+        // Format timestamp
+        function formatTimestamp(timestamp) {
+            try {
+                if (!timestamp) return 'N/A';
+                return new Date(timestamp).toLocaleString('en-US', {
+                    year: 'numeric', month: 'short', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit'
+                });
+            } catch (e) {
+                console.error('Error formatting timestamp:', e);
+                return timestamp || 'N/A';
+            }
+        }
+
+        // Format duration
+        function formatDuration(minutes) {
+            try {
+                if (isNaN(minutes) || minutes === null) return '0 minutes';
+                if (minutes < 60) return `${minutes} minutes`;
+                const hours = Math.floor(minutes / 60);
+                const remainingMinutes = minutes % 60;
+                return `${hours}h ${remainingMinutes}m`;
+            } catch (e) {
+                console.error('Error formatting duration:', e);
+                return '0 minutes';
+            }
+        }
+
+        // Update stats
+        async function updateStats() {
+            try {
+                const response = await fetch('/api/parking-stats');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                console.log('[DEBUG] Parking stats response:', data);
+                document.getElementById('current-count').textContent = data.current_count || 0;
+                document.getElementById('today-revenue').textContent = formatCurrency(data.today_revenue);
+                document.getElementById('unauthorized-count').textContent = data.unauthorized_count || 0;
+            } catch (error) {
+                console.error('Error fetching stats:', error);
+                document.getElementById('current-count').textContent = '0';
+                document.getElementById('today-revenue').textContent = 'RWF 0.00';
+                document.getElementById('unauthorized-count').textContent = '0';
+            }
+        }
+
+        // Update recent activity
+        async function updateRecentActivity() {
+            try {
+                const response = await fetch('/api/recent-activity');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const activities = await response.json();
+                console.log('[DEBUG] Recent activity response:', activities);
+                const activityList = document.getElementById('activity-list');
+                if (!activityList) {
+                    console.error('activity-list element not found');
+                    return;
+                }
+                activityList.innerHTML = activities.length === 0 ?
+                    '<div class="text-gray-400 text-center p-4">No recent activity</div>' :
+                    activities.map(activity => `
+                        <div class="activity-item p-4 rounded-lg bg-gray-800">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <span class="font-bold">${activity.plate_number || 'Unknown'}</span>
+                                    <span class="badge badge-${activity.action.toLowerCase()} ml-2">${activity.action_display || 'Unknown'}</span>
+                                    <span class="badge badge-${activity.payment_status ? 'paid' : 'unpaid'} ml-2">${activity.payment_status ? 'PAID' : 'UNPAID'}</span>
+                                </div>
+                                <div class="text-gray-400">${formatTimestamp(activity.timestamp)}</div>
+                            </div>
+                            ${activity.amount_due > 0 ? `
+                                <div class="mt-2 text-sm text-gray-400">
+                                    Amount Due: ${formatCurrency(activity.amount_due)}
+                                </div>
+                            ` : ''}
+                        </div>
+                    `).join('');
+            } catch (error) {
+                console.error('Error fetching recent activity:', error);
+                const activityList = document.getElementById('activity-list');
+                if (activityList) {
+                    activityList.innerHTML = '<div class="text-gray-400 text-center p-4">Failed to load recent activity</div>';
+                }
+            }
+        }
+
+        // Update current vehicles
+        async function updateCurrentVehicles() {
+            try {
+                const response = await fetch('/api/current-vehicles');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const vehicles = await response.json();
+                console.log('[DEBUG] Current vehicles response:', vehicles);
+                const vehiclesList = document.getElementById('current-vehicles');
+                if (!vehiclesList) {
+                    console.error('current-vehicles element not found');
+                    return;
+                }
+                vehiclesList.innerHTML = vehicles.length === 0 ?
+                    '<div class="text-gray-400 text-center p-4">No vehicles currently parked</div>' :
+                    vehicles.map(vehicle => `
+                        <div class="vehicle-item p-4 rounded-lg bg-gray-800">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <span class="font-bold">${vehicle.plate_number || 'Unknown'}</span>
+                                    <span class="badge badge-unpaid ml-2">UNPAID</span>
+                                </div>
+                                <div class="text-gray-400">${formatTimestamp(vehicle.entry_time)}</div>
+                            </div>
+                            <div class="mt-2 text-sm text-gray-400">
+                                <div>Amount Due: ${formatCurrency(vehicle.amount_due)}</div>
+                                <div>Duration: ${formatDuration(vehicle.duration_minutes)}</div>
+                            </div>
+                        </div>
+                    `).join('');
+            } catch (error) {
+                console.error('Error fetching current vehicles:', error);
+                const vehiclesList = document.getElementById('current-vehicles');
+                if (vehiclesList) {
+                    vehiclesList.innerHTML = '<div class="text-gray-400 text-center p-4">Failed to load current vehicles</div>';
+                }
+            }
+        }
+
+        // Update unauthorized exits
+        async function updateUnauthorizedExits() {
+            try {
+                const response = await fetch('/api/unauthorized-exits');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const exits = await response.json();
+                console.log('[DEBUG] Unauthorized exits response:', exits);
+                const exitsList = document.getElementById('unauthorized-exits');
+                if (!exitsList) {
+                    console.error('unauthorized-exits element not found');
+                    return;
+                }
+                exitsList.innerHTML = exits.length === 0 ?
+                    '<div class="text-gray-400 text-center p-4">No unauthorized exits</div>' :
+                    exits.map(exit => `
+                        <div class="exit-item p-4 rounded-lg bg-gray-800 unauthorized-exit">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <span class="font-bold text-red-500">${exit.plate_number || 'Unknown'}</span>
+                                    <span class="badge badge-unauthorized ml-2">Unauthorized Exit</span>
+                                    <span class="text-sm text-gray-400 ml-2">(${exit.attempt_count || 0} attempts)</span>
+                                </div>
+                                <div class="text-gray-400">${formatTimestamp(exit.timestamp)}</div>
+                            </div>
+                            <div class="mt-2 text-sm text-gray-400">
+                                Amount Due: ${formatCurrency(exit.amount_due)}
+                            </div>
+                        </div>
+                    `).join('');
+            } catch (error) {
+                console.error('Error fetching unauthorized exits:', error);
+                const exitsList = document.getElementById('unauthorized-exits');
+                if (exitsList) {
+                    exitsList.innerHTML = '<div class="text-gray-400 text-center p-4">Failed to load unauthorized exits</div>';
+                }
+            }
+        }
+
+        // Update all data
+        async function updateAll() {
+            try {
+                console.log('[DEBUG] Updating all data...');
+                await Promise.all([
+                    updateStats(),
+                    updateRecentActivity(),
+                    updateCurrentVehicles(),
+                    updateUnauthorizedExits()
+                ]);
+            } catch (error) {
+                console.error('Error in updateAll:', error);
+            }
+        }
+
+        // Initial update
+        console.log('[DEBUG] Initial page load');
+        updateAll();
+
+        // Update every 5 seconds
+        setInterval(() => {
+            console.log('[DEBUG] Scheduled update');
+            updateAll();
+        }, 5000);
+    </script>
+</body>
+</html>

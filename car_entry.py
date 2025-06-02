@@ -9,6 +9,7 @@ import pytesseract
 import serial.tools.list_ports
 from datetime import datetime
 import re
+from database import Database
 
 # Constants
 MODEL_PATH = './best.pt'
@@ -17,96 +18,126 @@ CSV_FILE = 'plates_log.csv'
 ENTRY_COOLDOWN = 300  # seconds
 PLATE_LENGTH = 7
 VALID_PREFIX = 'RA'
+DEBUG_IMAGE_DIR = 'debug_plates'
 
 # Initialize directories and files
 os.makedirs(SAVE_DIR, exist_ok=True)
+os.makedirs(DEBUG_IMAGE_DIR, exist_ok=True)
 if not os.path.exists(CSV_FILE):
     with open(CSV_FILE, 'w', newline='') as f:
         csv.writer(f).writerow(['Plate Number', 'Action', 'Payment Status', 'Timestamp', 'Amount Due'])
+
+# Initialize database connection
+try:
+    db = Database()
+    if not db.conn or not db.cursor:
+        print("[ERROR] Failed to initialize database connection")
+        db = None
+    else:
+        print("[DATABASE] Connection initialized successfully")
+except Exception as e:
+    print(f"[ERROR] Database initialization failed: {e}")
+    db = None
 
 # Load YOLO model
 model = YOLO(MODEL_PATH)
 
 def detect_arduino_port():
-    """Detect Arduino serial port automatically."""
+    """Detect Arduino port with better error handling"""
     ports = list(serial.tools.list_ports.comports())
-    print(f"[DEBUG] Available ports: {[p.device for p in ports]}")
     for port in ports:
-        if "usbmodem" in port.device.lower() or "wchusbmodem" in port.device.lower():
-            print(f"[DEBUG] Found potential Arduino at {port.device}")
+        if "Arduino" in port.description or "USB-SERIAL" in port.description:
             return port.device
-    print("[DEBUG] No Arduino port detected")
+    # If no Arduino found, try common COM ports
+    for port_name in ['COM3', 'COM4', 'COM5', 'COM6']:
+        try:
+            test_serial = serial.Serial(port_name, 9600, timeout=1)
+            test_serial.close()
+            return port_name
+        except:
+            continue
     return None
 
-def connect_arduino():
-    """Establish connection with Arduino."""
-    port = detect_arduino_port()
-    if port:
+def connect_arduino(max_retries=3):
+    """Connect to Arduino with retry logic"""
+    arduino_port = detect_arduino_port()
+    
+    if not arduino_port:
+        print("[ERROR] No Arduino port detected.")
+        return None
+    
+    for attempt in range(max_retries):
         try:
-            print(f"[DEBUG] Attempting to connect to {port}")
-            arduino = serial.Serial(port, 9600, timeout=1)
-            time.sleep(2)  # Allow connection to stabilize
-            print(f"[CONNECTED] Arduino on {port}")
-            # Test communication
-            arduino.write(b'TEST\n')
-            response = arduino.readline().decode().strip()
-            print(f"[DEBUG] Arduino test response: {response}")
+            print(f"[CONNECTING] Attempting to connect to Arduino on {arduino_port} (attempt {attempt + 1})")
+            arduino = serial.Serial(arduino_port, 9600, timeout=1)
+            time.sleep(2)  # Wait for Arduino to initialize
+            print(f"[CONNECTED] Arduino successfully connected on {arduino_port}")
             return arduino
-        except Exception as e:
-            print(f"[ERROR] Failed to connect to Arduino: {e}")
-    print("[WARNING] Arduino not detected - running in simulation mode.")
+        except serial.SerialException as e:
+            print(f"[ERROR] Connection attempt {attempt + 1} failed: {e}")
+            if "Access is denied" in str(e):
+                print("[HELP] Port may be in use. Try:")
+                print("- Close Arduino IDE")
+                print("- Unplug and replug Arduino")
+                print("- Check Device Manager for correct COM port")
+            time.sleep(1)
+    
+    print("[ERROR] Failed to connect to Arduino after all attempts.")
     return None
 
 def read_distance(arduino):
-    """Read distance from ultrasonic sensor."""
+    """Read distance from Arduino with proper error handling"""
+    if not arduino:
+        return 150  # Default safe distance when no Arduino
+    
     try:
-        if arduino and arduino.in_waiting > 0:
-            line = arduino.readline().decode('utf-8').strip()
-            if line:
-                distance = float(line)
-                if distance >= 0:
-                    print(f"[DEBUG] Distance reading: {distance} cm")
+        if arduino.in_waiting > 0:
+            val = arduino.readline().decode('utf-8').strip()
+            if val:
+                distance = float(val)
+                # Validate reasonable distance range
+                if 0 <= distance <= 400:  # HC-SR04 max range is ~400cm
                     return distance
-    except Exception as e:
+                else:
+                    print(f"[WARNING] Invalid distance reading: {distance}")
+                    return 150
+            else:
+                return 150  # No data available
+        else:
+            return 150  # No data waiting
+    except (UnicodeDecodeError, ValueError, serial.SerialException) as e:
         print(f"[ERROR] Reading distance: {e}")
-    return None
+        return 150
+    except Exception as e:
+        print(f"[UNEXPECTED ERROR] {e}")
+        return 150
 
 def extract_plate_text(plate_img):
-    """Extract text from license plate image using OCR with enhanced preprocessing."""
+    """OCR with enhanced debugging"""
     try:
-        # Save the detected plate for debugging
-        debug_img_path = os.path.join(SAVE_DIR, f"debug_{time.time()}.jpg")
-        cv2.imwrite(debug_img_path, plate_img)
+        # Save debug image
+        timestamp = int(time.time())
+        debug_path = os.path.join(DEBUG_IMAGE_DIR, f"plate_{timestamp}.jpg")
+        cv2.imwrite(debug_path, plate_img)
         
         # Enhanced preprocessing
         gray = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
-        
-        # Apply CLAHE for better contrast
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        gray = clahe.apply(gray)
-        
-        # Denoising
-        gray = cv2.fastNlMeansDenoising(gray, None, h=10)
-        
-        # Thresholding
         blur = cv2.GaussianBlur(gray, (3, 3), 0)
-        thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        enhanced = clahe.apply(blur)
+        thresh = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
         
-        # Morphological operations to clean up the image
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-        
-        # Try multiple OCR configurations
+        # OCR with multiple configurations
         configs = [
             '--psm 8 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-            '--psm 7 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-            '--psm 10 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+            '--psm 7 --oem 3',
+            '--psm 10 --oem 3'
         ]
         
         for config in configs:
             text = pytesseract.image_to_string(thresh, config=config).strip().replace(" ", "")
             if len(text) >= PLATE_LENGTH and "RA" in text:
-                print(f"[DEBUG] OCR with config {config}: {text}")
+                print(f"[OCR] Config {config}: {text}")
                 return text, thresh
         
         return "", thresh
@@ -151,47 +182,87 @@ def validate_plate(text):
 
 def check_plate_status(plate_number):
     """Check if plate can enter (no unclosed entry)."""
-    if not os.path.exists(CSV_FILE):
-        return None
-    
     try:
-        with open(CSV_FILE, 'r') as f:
-            reader = csv.DictReader(f)
-            records = list(reader)
-            
-            for record in reversed(records):
-                if record['Plate Number'] == plate_number:
-                    if record['Action'] == 'entry' and record['Payment Status'] == '0':
-                        return 'entry'
-                    elif record['Action'] == 'exit':
-                        return 'exit'
-        return None
+        if not db or not db.cursor:
+            print("[WARNING] Database not available, falling back to CSV check")
+            return check_plate_status_csv(plate_number)
+
+        # First check database
+        db.cursor.execute("""
+            SELECT action, payment_status 
+            FROM vehicles 
+            WHERE plate_number = %s 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        """, (plate_number,))
+        result = db.cursor.fetchone()
+        
+        if result:
+            action, payment_status = result
+            if action == 'entry' and not payment_status:
+                return 'entry'
+            elif action == 'exit':
+                return 'exit'
+        
+        return check_plate_status_csv(plate_number)
     except Exception as e:
         print(f"[ERROR] Failed to check plate status: {e}")
+        return check_plate_status_csv(plate_number)
+
+def check_plate_status_csv(plate_number):
+    """Fallback to CSV check when database is unavailable."""
+    try:
+        if os.path.exists(CSV_FILE):
+            with open(CSV_FILE, 'r') as f:
+                reader = csv.DictReader(f)
+                records = list(reader)
+                
+                for record in reversed(records):
+                    if record['Plate Number'] == plate_number:
+                        if record['Action'] == 'entry' and record['Payment Status'] == '0':
+                            return 'entry'
+                        elif record['Action'] == 'exit':
+                            return 'exit'
+        return None
+    except Exception as e:
+        print(f"[ERROR] CSV check failed: {e}")
         return None
 
 def control_gate(arduino, action):
-    """Handle gate control with robust error handling."""
+    """Control gate using numeric codes: 1=open, 0=close, 2=buzzer."""
     if not arduino:
-        print("[SIMULATION] Would send gate command:", action)
+        print(f"[SIMULATION] Would send gate command: {action}")
         return True
     
     try:
-        if action == 'open':
-            print("[GATE] Sending OPEN command")
-            arduino.write(b'OPEN\n')
-        elif action == 'close':
-            print("[GATE] Sending CLOSE command")
-            arduino.write(b'CLOSE\n')
-        elif action == 'buzzer':
-            print("[GATE] Activating buzzer")
-            arduino.write(b'BUZZ\n')
-        
-        arduino.flush()
-        time.sleep(0.1)
-        response = arduino.readline().decode().strip()
-        print(f"[ARDUINO] Response: {response}")
-        return True
+        command_map = {
+            'open': b'1',
+            'close': b'0',
+            'buzzer': b'2'
+        }
+
+        if action in command_map:
+            print(f"[GATE] Sending {action.upper()} command (code {command_map[action].decode()})")
+            arduino.write(command_map[action])
+            arduino.flush()
+            time.sleep(0.1)
+
+            # Read Arduino's response (optional)
+            if arduino.in_waiting:
+                response = arduino.readline().decode().strip()
+                print(f"[ARDUINO] Response: {response}")
+            else:
+                print("[ARDUINO] No response")
+
+            # Optional: close the gate after delay
+            if action == 'open':
+                time.sleep(15)
+                arduino.write(b'0')
+                print("[GATE] Sent CLOSE command after delay")
+            return True
+        else:
+            print(f"[ERROR] Unknown gate command: {action}")
+            return False
     except Exception as e:
         print(f"[ERROR] Gate control failed: {e}")
         return False
@@ -199,17 +270,27 @@ def control_gate(arduino, action):
 def log_action(plate, action, arduino):
     """Log entry/exit and control gate."""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    payment_status = '0' if action == 'entry' else '1'
-    amount_due = '0'
+    payment_status = False if action == 'entry' else True
+    amount_due = 0
     
     print(f"[ACTION] Processing {action} for {plate}")
     
-    # Log to CSV
     try:
+        # Log to database if available
+        if db and db.cursor:
+            try:
+                if action == 'entry':
+                    db.log_vehicle_entry(plate)
+                else:
+                    db.log_vehicle_exit(plate)
+            except Exception as e:
+                print(f"[ERROR] Database logging failed: {e}")
+        
+        # Always log to CSV for backup
         with open(CSV_FILE, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([plate, action, payment_status, timestamp, amount_due])
-        print(f"[LOGGED] {action.upper()} for {plate} at {timestamp}")
+            writer.writerow([plate, action, '0' if action == 'entry' else '1', timestamp, amount_due])
+        print(f"[CSV] {action.upper()} for {plate} at {timestamp}")
     except Exception as e:
         print(f"[ERROR] Failed to log action: {e}")
         return
