@@ -15,10 +15,16 @@ def update_dashboard_data():
             data = db.get_dashboard_data()
             if data:
                 app.config['dashboard_data'] = data
-            time.sleep(5)  # Update every 5 seconds
+            time.sleep(5)
         except Exception as e:
             print(f"[ERROR] Failed to update dashboard data: {e}")
             time.sleep(5)
+
+def decode_if_bytes(value):
+    """Decode bytearray or bytes to string, handle None or other types."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode('utf-8', errors='ignore')
+    return value if value is not None else ''
 
 @app.route('/')
 def index():
@@ -52,8 +58,8 @@ def parking_stats():
             )
         """)
         result = db.cursor.fetchone()
+        print(f"[DEBUG] Current count raw result: {result}")
         current_count = int(result[0]) if result and result[0] is not None else 0
-        print(f"[DEBUG] Current count query result: {result}")
 
         # Today's revenue
         db.cursor.execute("""
@@ -63,8 +69,8 @@ def parking_stats():
             AND payment_status = TRUE
         """)
         result = db.cursor.fetchone()
+        print(f"[DEBUG] Revenue raw result: {result}")
         today_revenue = float(result[0]) if result and result[0] is not None else 0.00
-        print(f"[DEBUG] Revenue query result: {result}")
 
         # Unauthorized exits count
         db.cursor.execute("""
@@ -73,8 +79,8 @@ def parking_stats():
             WHERE DATE(timestamp) = CURDATE()
         """)
         result = db.cursor.fetchone()
+        print(f"[DEBUG] Unauthorized count raw result: {result}")
         unauthorized_count = int(result[0]) if result and result[0] is not None else 0
-        print(f"[DEBUG] Unauthorized count query result: {result}")
 
         return jsonify({
             'current_count': current_count,
@@ -105,12 +111,12 @@ def parking_trends():
         """)
         hourly_data = []
         for row in db.cursor.fetchall():
+            print(f"[DEBUG] Hourly data row: {row}")
             hour, count = row
             hourly_data.append({
                 'hour': f"{int(hour):02d}:00",
                 'count': int(count)
             })
-        print(f"[DEBUG] Hourly data query result: {hourly_data}")
 
         # Today's revenue
         db.cursor.execute("""
@@ -120,8 +126,8 @@ def parking_trends():
             AND payment_status = TRUE
         """)
         result = db.cursor.fetchone()
+        print(f"[DEBUG] Revenue data raw result: {result}")
         revenue_data = float(result[0]) if result and result[0] is not None else 0.00
-        print(f"[DEBUG] Revenue data query result: {result}")
 
         return jsonify({
             'hourly_data': hourly_data,
@@ -158,17 +164,15 @@ def recent_activity():
         """)
         activities = []
         for activity in db.cursor.fetchall():
-            plate_number = activity[0].decode('utf-8') if isinstance(activity[0], (bytes, bytearray)) else activity[0]
-            action = activity[1].decode('utf-8') if isinstance(activity[1], (bytes, bytearray)) else activity[1]
+            print(f"[DEBUG] Recent activity row: {activity}")
             activities.append({
-                'plate_number': plate_number or '',
-                'action': action or '',
-                'action_display': activity[5].decode('utf-8') if isinstance(activity[5], (bytes, bytearray)) else activity[5] or '',
+                'plate_number': decode_if_bytes(activity[0]),
+                'action': decode_if_bytes(activity[1]),
+                'action_display': decode_if_bytes(activity[5]),
                 'timestamp': activity[2].strftime('%Y-%m-%d %H:%M:%S') if activity[2] else '',
                 'payment_status': bool(activity[3]) if activity[3] is not None else False,
                 'amount_due': float(activity[4]) if activity[4] is not None else 0.00
             })
-        print(f"[DEBUG] Recent activity query result (first 5): {activities[:5]}")
         return jsonify(activities)
     except Exception as e:
         print(f"[ERROR] Failed to get recent activity: {e}")
@@ -200,14 +204,13 @@ def unauthorized_exits():
         """)
         exits = []
         for exit_record in db.cursor.fetchall():
-            plate_number = exit_record[0].decode('utf-8') if isinstance(exit_record[0], (bytes, bytearray)) else exit_record[0]
+            print(f"[DEBUG] Unauthorized exit row: {exit_record}")
             exits.append({
-                'plate_number': plate_number or '',
+                'plate_number': decode_if_bytes(exit_record[0]),
                 'timestamp': exit_record[1].strftime('%Y-%m-%d %H:%M:%S') if exit_record[1] else '',
                 'amount_due': float(exit_record[2]) if exit_record[2] is not None else 0.00,
                 'attempt_count': int(exit_record[3]) if exit_record[3] is not None else 0
             })
-        print(f"[DEBUG] Unauthorized exits query result (first 5): {exits[:5]}")
         return jsonify(exits)
     except Exception as e:
         print(f"[ERROR] Failed to get unauthorized exits: {e}")
@@ -238,15 +241,14 @@ def current_vehicles():
         """)
         vehicles = []
         for vehicle in db.cursor.fetchall():
-            plate_number = vehicle[0].decode('utf-8') if isinstance(vehicle[0], (bytes, bytearray)) else vehicle[0]
+            print(f"[DEBUG] Current vehicle row: {vehicle}")
             vehicles.append({
-                'plate_number': plate_number or '',
+                'plate_number': decode_if_bytes(vehicle[0]),
                 'entry_time': vehicle[1].strftime('%Y-%m-%d %H:%M:%S') if vehicle[1] else '',
                 'payment_status': bool(vehicle[2]) if vehicle[2] is not None else False,
                 'amount_due': float(vehicle[3]) if vehicle[3] is not None else 0.00,
                 'duration_minutes': int(vehicle[4]) if vehicle[4] is not None else 0
             })
-        print(f"[DEBUG] Current vehicles query result (first 5): {vehicles[:5]}")
         return jsonify(vehicles)
     except Exception as e:
         print(f"[ERROR] Failed to get current vehicles: {e}")
